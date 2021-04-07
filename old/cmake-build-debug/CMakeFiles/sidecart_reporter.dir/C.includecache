@@ -1,0 +1,46 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/tin/Repos/SpaceballBench/images/sidecart-reporter/main.c
+netinet/in.h
+-
+errno.h
+-
+netdb.h
+-
+stdio.h
+-
+stdlib.h
+-
+string.h
+-
+netinet/ip_icmp.h
+-
+netinet/udp.h
+-
+netinet/tcp.h
+-
+netinet/ip.h
+-
+netinet/if_ether.h
+-
+net/ethernet.h
+-
+sys/socket.h
+-
+arpa/inet.h
+-
+sys/ioctl.h
+-
+sys/time.h
+-
+sys/types.h
+-
+unistd.h
+-
+

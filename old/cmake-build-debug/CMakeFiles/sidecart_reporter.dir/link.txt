@@ -1,0 +1,1 @@
+/usr/bin/cc -g   CMakeFiles/sidecart_reporter.dir/main.c.o  -o sidecart_reporter 
