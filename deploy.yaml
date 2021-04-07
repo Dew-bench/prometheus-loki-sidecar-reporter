@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: alpine-multicontainer
+  name: alpine-multicontainer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpine-multicontainer
+  template:
+    metadata:
+      labels:
+        app: alpine-multicontainer
+      annotations:
+        prometheus.io/scrape: 'true'
+        prometheus.io/path: '/metrics'
+        prometheus.io/port: '5000'
+    spec:
+      shareProcessNamespace: true
+      containers:
+      - image: alpine
+        name: alpine-a
+        command: ["/bin/sleep", "3650d"]
+        resources: {}
+      - image: alpine
+        name: alpine-b
+        command: ["/bin/sleep", "3650d"]
+        resources: {}
+        ports:
+          - containerPort: 5000
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - SYS_PTRACE
+            - SYS_ADMIN
+        stdin: true
+        tty: true
