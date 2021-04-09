@@ -1,4 +1,4 @@
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 from prometheus_client import start_http_server
 
 import dpkt, pcap, datetime
@@ -7,13 +7,15 @@ from dpkt.utils import mac_to_str, inet_to_str
 import subprocess, os, signal
 import time
 
+import socket, requests, json, datetime, pytz
+
 # start prom. server
 start_http_server(5000)
 
 #   Metrics : 
 # 
 #  - Network :
-#  packet src
+#  packet src   -  
 #  packet dst
 #  packet src port
 #  packet dst port
@@ -24,13 +26,21 @@ start_http_server(5000)
 #  
 #  - Proc :
 #  sec
-#  insn per cycle
-#  instructions
-#  CPUs utilized
+#  insn per cycle  -  counter
+#  instructions  - counter
+#  CPUs utilized  -  gauge 
 
 # watch -n 1 "curl --location --request GET 'www.google.com' --header 'prometheus-type: dfbfgn' --header 'prometheus-id: cfv' --header 'prometheus-sender: dfgb' --header 'Content-Type: application/json' --data-raw '{"val":-2}'"
 
-PROMETHEUS_HTTP_HEADER_KEYS = [
+# LOKI SETTINGS
+host = [ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")][:1][0]
+LOKI_headers = { 'Content-type': 'application/json' }
+LOKI_url = 'http://loki-stack.loki-stack:3100/api/prom/push'
+NUM_OF_PCKTS_BEFORE_REPORTING = 1
+TIME_ZONE = pytz.timezone('America/Los_Angeles')
+
+
+METRICS_HTTP_HEADER_KEYS = [
     "prometheus-type",  # string, packet type
     "prometheus-id",  # int, packet id
     "prometheus-sender" # string, name sender
@@ -38,7 +48,7 @@ PROMETHEUS_HTTP_HEADER_KEYS = [
 
 PROCESS_FILTER = ["none"]
 
-#  TODO get pid of every process but this
+#  TODO get pid of every process but this one
 # for process in psutil.process_iter ():
     # c=c+1
     # Name = process.name () # Name of the process
@@ -56,6 +66,13 @@ class Performance:
         self.pcap_last_received = 0
         # total number of packets received, dropped, and dropped by the interface
 
+        self.pckt_entries = []
+
+        # prom. metrics
+        self.prom_metric_g_CPUs_utilized  = Gauge("CPUs_utilized", "CPUs_utilized")
+        self.prom_metric_g_insn_per_cycle = Gauge("insn_per_cycle", "insn_per_cycle")
+        self.prom_metric_c_instructions = Counter("instructions", "instructions")
+        
     def start_perf(self):
         self.perf_start_time = time.time()
         self.proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, preexec_fn=os.setsid)
@@ -67,9 +84,9 @@ class Performance:
 
         perf_descriptor = {}
         perf_descriptor["sec"] = time.time() - self.perf_start_time
-        perf_descriptor["CPUs utilized"] = perf_out[0].split(',')[5]
-        perf_descriptor["insn per cycle"] = perf_out[5].split(',')[5]
-        perf_descriptor["instructions"] = perf_out[5].split(',')[0]
+        perf_descriptor["CPUs utilized"] = float(perf_out[0].split(',')[5])
+        perf_descriptor["insn per cycle"] = float(perf_out[5].split(',')[5])
+        perf_descriptor["instructions"] = int(perf_out[5].split(',')[0])
         
         self.add_perf_to_prom(perf_descriptor)
 
@@ -84,7 +101,7 @@ class Performance:
                 self.pcap_last_received = self.cap.stats()[0]
 
             # after 60 seconds report perf stats and start perf
-            if time.time() - self.perf_start_time > 60:
+            if time.time() - self.perf_start_time > 10:
                 self.stop_perf() 
                 self.start_perf()
         
@@ -110,22 +127,47 @@ class Performance:
         headers = request.headers
         header_keys = headers.keys()
 
-        pckt_descriptor["src"] = ip.src
-        pckt_descriptor["dst"] = ip.dst
-        pckt_descriptor["protocol"] = ip.p  # iana protocol number
-        pckt_descriptor["timestamp"] = time
+        pckt_descriptor["ts"] = datetime.datetime.fromtimestamp(time, TIME_ZONE).isoformat('T')
+        pckt_descriptor["line"] = "src : " + self.ip_hex_b_string_to_string_int(ip.src) + " dst: " + self.ip_hex_b_string_to_string_int(ip.dst) + " protocol : " + str(ip.p)
+        # pckt_descriptor["line"]["src"] = 
+        # pckt_descriptor["line"]["dst"] = 
+        # pckt_descriptor["line"]["protocol"] =   # iana protocol number
 
-        for PR_KEY in PROMETHEUS_HTTP_HEADER_KEYS:
+        for PR_KEY in METRICS_HTTP_HEADER_KEYS:
             if PR_KEY in header_keys:
                 pckt_descriptor[PR_KEY] = headers[PR_KEY]
         
-        self.add_packet_to_prom(pckt_descriptor)
+        self.add_packet_to_loki(pckt_descriptor)
 
-    def add_packet_to_prom(self, pckt_descriptor):
-        print(pckt_descriptor)
+    def ip_hex_b_string_to_string_int(self, ip):
+        ip = ip.hex()
+        return '.'.join(str(int(i, 16)) for i in [ip[i:i+2] for i in range(0, len(ip), 2)])
+
+    def add_packet_to_loki(self, pckt_descriptor):
+        # print(pckt_descriptor)
+        self.pckt_entries.append(pckt_descriptor)
+
+        if len(self.pckt_entries) > NUM_OF_PCKTS_BEFORE_REPORTING:
+            self.send_payload_to_loki()
+            self.pckt_entries = []
 
     def add_perf_to_prom(self, perf_descriptor):
+        self.prom_metric_g_CPUs_utilized.set(perf_descriptor["CPUs utilized"])
+        self.prom_metric_g_insn_per_cycle.set(perf_descriptor["insn per cycle"])
+        self.prom_metric_c_instructions.inc(perf_descriptor["instructions"])
         print(perf_descriptor)        
+    
+    def send_payload_to_loki(self):
+        payload = {'streams': [{'labels': '{host=\"' + host + '\"}','entries': []}]}
+        payload['streams'][0]['entries'] = self.pckt_entries
+
+        payload = json.dumps(payload)
+
+        # print(self.pckt_entries)
+
+        answer = requests.post(LOKI_url, data=payload, headers=LOKI_headers) 
+        print(answer) # should return 204
+
 
 
 monitor = Performance()

@@ -20,3 +20,6 @@ pip3 install pypcap dpkt
 # psutil deps
 apk add linux-headers
 pip3 install psutil
+
+# loki dep
+pip3 install pytz prometheus_client
